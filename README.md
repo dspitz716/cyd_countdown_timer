@@ -8,9 +8,9 @@ A countdown timer created for an ESP32 cyd
 - Connects to ntp server to maintain date time
 
 ## To Do:
-- configurable wifi settings
-- custom color swapping
-- add holidays to standard holiday list without modifying code
+[x] configurable wifi settings
+[] custom color swapping
+[] add holidays to standard holiday list without modifying code
 
 ## Images:
 
