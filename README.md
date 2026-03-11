@@ -11,8 +11,9 @@ A countdown timer created for an ESP32 cyd
 - :white_check_mark: Configure wifi on boot (change from countdown menu)
 
 ## Display:
-https://www.aliexpress.us/item/3256804774970998.html?spm=a2g0o.order_list.order_list_main.5.b9511802755cxh&gatewayAdapt=glo2usa
-I included my User_Setup.h for the cyd display. Follow this guide if you have not setup one before https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/
+[Display I Used](https://www.aliexpress.us/item/3256804774970998.html?spm=a2g0o.order_list.order_list_main.5.b9511802755cxh&gatewayAdapt=glo2usa)  
+I included my User_Setup.h for the cyd display. Follow this guide if you have not setup one before  
+https://randomnerdtutorials.com/cheap-yellow-display-esp32-2432s028r/
 
 ## Case:
 I included the files directly here for the case I printed for a 2.8 inch cyd you can find them here as well
