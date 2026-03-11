@@ -46,12 +46,7 @@ char savedPassword[65] = "";
 // ═══════════════════════════════════════════════════════════════
 struct Birthday { const char* name; int month; int day; };
 const Birthday BIRTHDAYS[] = {
-  { "Juniper's Bday", 8,  21 },
-  { "Rowan's Bday",   9,  10 },
-  { "Cam's Bday", 11, 1},
-  { "Mom's Bday", 9, 3},
-  { "Dad's Bday", 7, 16},
-  // Add more: { "Name", month, day },
+  // ADD BIRTHDAYS: { "Name", month, day },
 };
 const int NUM_BIRTHDAYS = sizeof(BIRTHDAYS) / sizeof(BIRTHDAYS[0]);
 
@@ -1456,3 +1451,4 @@ void loop() {
 
   delay(20);
 }
+
