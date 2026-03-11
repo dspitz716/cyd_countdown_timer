@@ -22,14 +22,9 @@
 #include <time.h>
 #include <math.h>
 
-// ═══════════════════════════════════════════════════════════════
-//   !! EDIT YOUR WIFI NETWORKS HERE !!
-// ═══════════════════════════════════════════════════════════════
-struct WifiNetwork { const char* ssid; const char* password; };
-WifiNetwork networks[] = {
-   { "fbisurveilancevan", "spitzerwifi!"   },
-};
-const int NUM_NETWORKS = sizeof(networks) / sizeof(networks[0]);
+// ── WiFi credentials (entered by user, stored in flash) ───────
+char savedSSID[33]     = "";
+char savedPassword[65] = "";
 
 // ── NTP / Timezone ────────────────────────────────────────────
 #define NTP_SERVER      "pool.ntp.org"
@@ -51,7 +46,7 @@ const int NUM_NETWORKS = sizeof(networks) / sizeof(networks[0]);
 // ═══════════════════════════════════════════════════════════════
 struct Birthday { const char* name; int month; int day; };
 const Birthday BIRTHDAYS[] = {
-   { "Juniper's Bday", 8,  21 },
+  { "Juniper's Bday", 8,  21 },
   { "Rowan's Bday",   9,  10 },
   { "Cam's Bday", 11, 1},
   { "Mom's Bday", 9, 3},
@@ -132,6 +127,8 @@ int numHomeEntries = 0;
 // ── Screens ───────────────────────────────────────────────────
 enum Screen {
   SCREEN_WIFI,
+  SCREEN_WIFI_SETUP,    // first-boot credential entry
+  SCREEN_WIFI_CONFIRM,  // confirm/clear saved credentials
   SCREEN_HOME,         // holiday/birthday homepage (leftmost)
   SCREEN_COUNTDOWN,    // custom slots
   SCREEN_HOLIDAY_CD,   // full countdown for a tapped holiday/birthday
@@ -325,9 +322,238 @@ void loadAllSlots() {
   prefs.end();
 }
 
+void saveWifiCredentials(const char* ssid, const char* pass) {
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.putBool("saved", true);
+  prefs.end();
+  strncpy(savedSSID,     ssid, 32); savedSSID[32]    = '\0';
+  strncpy(savedPassword, pass, 64); savedPassword[64]= '\0';
+}
+
+bool loadWifiCredentials() {
+  prefs.begin("wifi", true);
+  bool exists = prefs.getBool("saved", false);
+  if (exists) {
+    String s = prefs.getString("ssid", "");
+    String p = prefs.getString("pass", "");
+    strncpy(savedSSID,     s.c_str(), 32); savedSSID[32]    = '\0';
+    strncpy(savedPassword, p.c_str(), 64); savedPassword[64]= '\0';
+  }
+  prefs.end();
+  return exists;
+}
+
+void clearWifiCredentials() {
+  prefs.begin("wifi", false);
+  prefs.clear();
+  prefs.end();
+  savedSSID[0]     = '\0';
+  savedPassword[0] = '\0';
+}
+
 // ─────────────────────────────────────────────────────────────
-//  TOUCH
+//  KEYBOARD LAYOUT (used by both WiFi setup and name editor)
 // ─────────────────────────────────────────────────────────────
+
+const char* KB_ROWS[3][3] = {
+  {"qwertyuiop","QWERTYUIOP","1234567890"},
+  {"asdfghjkl", "ASDFGHJKL", "!@#$%^&*("},
+  {"zxcvbnm",   "ZXCVBNM",   "-_., /)+" }
+};
+#define KB_Y0 98
+#define KB_RH 34
+#define KB_KW 29
+#define KB_KH 28
+
+// ─────────────────────────────────────────────────────────────
+//  WIFI SETUP SCREEN  (keyboard-driven SSID + password entry)
+// ─────────────────────────────────────────────────────────────
+
+// Setup state: which field is being edited
+enum WifiSetupField { FIELD_SSID, FIELD_PASS };
+WifiSetupField wifiSetupField = FIELD_SSID;
+char wifiSetupSSID[33] = "";
+char wifiSetupPass[65] = "";
+
+void drawWifiSetupScreen() {
+  tft.fillScreen(COL_BG);
+  tft.fillRect(0,0,SW,28,COL_PANEL);
+  tft.drawFastHLine(0,28,SW,COL_ACCENT);
+  tft.setTextColor(COL_ACCENT,COL_PANEL); tft.setTextSize(2);
+  tft.setCursor(8,7); tft.print("WIFI SETUP");
+
+  // SSID field
+  bool ssidActive = (wifiSetupField == FIELD_SSID);
+  uint16_t ssidCol = ssidActive ? COL_ACCENT : COL_DIM;
+  tft.drawRoundRect(8,32,304,22,4,ssidCol);
+  if (ssidActive) tft.fillRoundRect(8,32,304,22,4,COL_SELECTED);
+  tft.setTextColor(COL_DIM,ssidActive?COL_SELECTED:COL_BG); tft.setTextSize(1);
+  tft.setCursor(14,34); tft.print("SSID:");
+  tft.setTextColor(COL_TEXT,ssidActive?COL_SELECTED:COL_BG); tft.setTextSize(1);
+  char ssidDisp[36];
+  snprintf(ssidDisp,sizeof(ssidDisp),"%s%s", wifiSetupSSID, ssidActive?"_":"");
+  tft.setCursor(48,34); tft.print(ssidDisp);
+
+  // Password field
+  bool passActive = (wifiSetupField == FIELD_PASS);
+  uint16_t passCol = passActive ? COL_ACCENT : COL_DIM;
+  tft.drawRoundRect(8,58,304,22,4,passCol);
+  if (passActive) tft.fillRoundRect(8,58,304,22,4,COL_SELECTED);
+  tft.setTextColor(COL_DIM,passActive?COL_SELECTED:COL_BG); tft.setTextSize(1);
+  tft.setCursor(14,60); tft.print("PASS:");
+  tft.setTextColor(COL_TEXT,passActive?COL_SELECTED:COL_BG);
+  tft.setCursor(48,60); tft.print(wifiSetupPass);
+  if (passActive) tft.print("_");
+
+  // Keyboard — starts at y=84, rows compressed to fit
+  // 3 letter rows at KH=26 each = 78px, special row 26px = 104px total → ends at 188
+  #define WK_Y0  84
+  #define WK_RH  26
+  #define WK_KH  24
+
+  int mode = (kbMode==KB_LOWER)?0:(kbMode==KB_UPPER)?1:2;
+  for (int row=0;row<3;row++) {
+    const char* r=KB_ROWS[row][mode]; int len=strlen(r),rowW=len*KB_KW;
+    int xs=(SW-rowW)/2, ky=WK_Y0+row*WK_RH;
+    for (int k=0;k<len;k++) {
+      int kx=xs+k*KB_KW;
+      tft.fillRoundRect(kx+1,ky+1,KB_KW-2,WK_KH-2,4,COL_KEYFACE);
+      tft.drawRoundRect(kx+1,ky+1,KB_KW-2,WK_KH-2,4,COL_BORDER);
+      tft.setTextColor(COL_TEXT,COL_KEYFACE); tft.setTextSize(2);
+      tft.setCursor(kx+7,ky+5); tft.print(r[k]);
+    }
+  }
+
+  // Special row: 123 | CAP | SPC | <DEL | NEXT/CONNECT
+  int sy = WK_Y0 + 3*WK_RH;
+  bool numOn=(kbMode==KB_NUM), capOn=(kbMode==KB_UPPER);
+
+  tft.fillRoundRect(2,   sy+1, 44, WK_KH-2, 4, numOn?COL_ACCENT:COL_KEYFACE);
+  tft.drawRoundRect(2,   sy+1, 44, WK_KH-2, 4, COL_BORDER);
+  tft.setTextColor(numOn?COL_BG:COL_TEXT, numOn?COL_ACCENT:COL_KEYFACE);
+  tft.setTextSize(1); tft.setCursor(8, sy+9); tft.print(numOn?"ABC":"123");
+
+  tft.fillRoundRect(50,  sy+1, 38, WK_KH-2, 4, capOn?COL_ACCENT:COL_KEYFACE);
+  tft.drawRoundRect(50,  sy+1, 38, WK_KH-2, 4, COL_BORDER);
+  tft.setTextColor(capOn?COL_BG:COL_TEXT, capOn?COL_ACCENT:COL_KEYFACE);
+  tft.setTextSize(1); tft.setCursor(55, sy+9); tft.print("CAP");
+
+  tft.fillRoundRect(92,  sy+1, 52, WK_KH-2, 4, COL_KEYFACE);
+  tft.drawRoundRect(92,  sy+1, 52, WK_KH-2, 4, COL_BORDER);
+  tft.setTextColor(COL_TEXT, COL_KEYFACE);
+  tft.setTextSize(1); tft.setCursor(106, sy+9); tft.print("SPC");
+
+  tft.fillRoundRect(148, sy+1, 48, WK_KH-2, 4, COL_KEYFACE);
+  tft.drawRoundRect(148, sy+1, 48, WK_KH-2, 4, COL_BORDER);
+  tft.setTextColor(COL_RED, COL_KEYFACE);
+  tft.setTextSize(1); tft.setCursor(152, sy+9); tft.print("<DEL");
+
+  // NEXT or CONNECT
+  uint16_t actionCol = ssidActive ? COL_ACCENT : COL_GREEN;
+  tft.fillRoundRect(200, sy+1, 118, WK_KH-2, 4, actionCol);
+  tft.setTextColor(COL_BG, actionCol);
+  tft.setTextSize(1); tft.setCursor(ssidActive?222:206, sy+9);
+  tft.print(ssidActive ? "NEXT >" : "CONNECT");
+}
+
+void handleWifiSetupTouch(int tx, int ty) {
+  #define WK_Y0  84
+  #define WK_RH  26
+  #define WK_KH  24
+  int sy = WK_Y0 + 3*WK_RH;
+
+  // Field selection by tapping the input boxes
+  if (ty>=32&&ty<=54&&tx>=8&&tx<=312)  { wifiSetupField=FIELD_SSID; drawWifiSetupScreen(); return; }
+  if (ty>=58&&ty<=80&&tx>=8&&tx<=312)  { wifiSetupField=FIELD_PASS; drawWifiSetupScreen(); return; }
+
+  // Special bottom row
+  if (ty>=sy && ty<=sy+WK_KH) {
+    if (tx>=2  &&tx<=46)  { kbMode=(kbMode==KB_NUM)?KB_LOWER:KB_NUM;     drawWifiSetupScreen(); return; }
+    if (tx>=50 &&tx<=88)  { kbMode=(kbMode==KB_UPPER)?KB_LOWER:KB_UPPER; drawWifiSetupScreen(); return; }
+    if (tx>=92 &&tx<=144) {
+      // Space
+      if (wifiSetupField==FIELD_SSID && strlen(wifiSetupSSID)<32) { int l=strlen(wifiSetupSSID); wifiSetupSSID[l]=' '; wifiSetupSSID[l+1]='\0'; }
+      if (wifiSetupField==FIELD_PASS && strlen(wifiSetupPass)<64) { int l=strlen(wifiSetupPass); wifiSetupPass[l]=' '; wifiSetupPass[l+1]='\0'; }
+      drawWifiSetupScreen(); return;
+    }
+    if (tx>=148&&tx<=196) {
+      // Backspace
+      if (wifiSetupField==FIELD_SSID) { int l=strlen(wifiSetupSSID); if(l>0) wifiSetupSSID[l-1]='\0'; }
+      if (wifiSetupField==FIELD_PASS) { int l=strlen(wifiSetupPass); if(l>0) wifiSetupPass[l-1]='\0'; }
+      drawWifiSetupScreen(); return;
+    }
+    if (tx>=200&&tx<=318) {
+      if (wifiSetupField==FIELD_SSID) {
+        // NEXT — move to password field
+        wifiSetupField=FIELD_PASS; kbMode=KB_LOWER; drawWifiSetupScreen();
+      } else {
+        // CONNECT — save and attempt connection
+        if (strlen(wifiSetupSSID)>0) {
+          saveWifiCredentials(wifiSetupSSID, wifiSetupPass);
+          bool ok=connectAndSync();
+          if (!ok) {
+            clearWifiCredentials();
+            wifiSetupSSID[0]='\0'; wifiSetupPass[0]='\0';
+            tft.fillScreen(COL_BG);
+            tft.setTextColor(COL_RED,COL_BG); tft.setTextSize(2);
+            tft.setCursor(20,100); tft.print("Connection failed!");
+            tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
+            tft.setCursor(20,130); tft.print("Check SSID and password.");
+            delay(2500);
+            currentScreen=SCREEN_WIFI_SETUP;
+            drawWifiSetupScreen();
+          } else {
+            loadAllSlots();
+            buildHomeEntries();
+            pageIndex=0; currentScreen=SCREEN_HOME; drawHomePage();
+          }
+        }
+      }
+      return;
+    }
+  }
+
+  // Letter rows
+  int mode=(kbMode==KB_LOWER)?0:(kbMode==KB_UPPER)?1:2;
+  for (int row=0;row<3;row++) {
+    int ky=WK_Y0+row*WK_RH;
+    if (ty<ky||ty>ky+WK_KH) continue;
+    const char* r=KB_ROWS[row][mode]; int len=strlen(r),rowW=len*KB_KW;
+    int xs=(SW-rowW)/2;
+    for (int k=0;k<len;k++) {
+      int kx=xs+k*KB_KW;
+      if (tx>=kx&&tx<=kx+KB_KW) {
+        char c=r[k];
+        if (wifiSetupField==FIELD_SSID && strlen(wifiSetupSSID)<32) { int l=strlen(wifiSetupSSID); wifiSetupSSID[l]=c; wifiSetupSSID[l+1]='\0'; }
+        if (wifiSetupField==FIELD_PASS && strlen(wifiSetupPass)<64) { int l=strlen(wifiSetupPass); wifiSetupPass[l]=c; wifiSetupPass[l+1]='\0'; }
+        if (kbMode==KB_UPPER) kbMode=KB_LOWER;
+        drawWifiSetupScreen(); return;
+      }
+    }
+  }
+}
+
+// Confirm clear WiFi screen
+void drawWifiConfirmScreen() {
+  tft.fillScreen(COL_BG);
+  tft.fillRoundRect(30,60,260,130,12,COL_PANEL);
+  tft.drawRoundRect(30,60,260,130,12,COL_ORANGE);
+  tft.setTextColor(COL_ORANGE,COL_PANEL); tft.setTextSize(2);
+  tft.setCursor(52,78); tft.print("CHANGE WIFI?");
+  tft.setTextColor(COL_TEXT,COL_PANEL); tft.setTextSize(1);
+  tft.setCursor(46,104);
+  char buf[34]; snprintf(buf,sizeof(buf),"Current: %.28s",savedSSID);
+  tft.print(buf);
+  tft.setCursor(46,118); tft.print("This will clear saved credentials.");
+  tft.fillRoundRect(44,162,96,24,6,COL_DIM);
+  tft.setTextColor(COL_TEXT,COL_DIM); tft.setTextSize(2);
+  tft.setCursor(68,167); tft.print("NO");
+  tft.fillRoundRect(180,162,96,24,6,COL_ORANGE);
+  tft.setTextColor(COL_BG,COL_ORANGE); tft.setTextSize(2);
+  tft.setCursor(194,167); tft.print("YES");
+}
 
 bool getTouchPoint(int &tx,int &ty) {
   if (!ts.tirqTouched()||!ts.touched()) return false;
@@ -358,99 +584,58 @@ void drawWifiIcon(int cx,int cy,uint16_t col) {
 //  WIFI / NTP
 // ─────────────────────────────────────────────────────────────
 
-void drawWifiScreen(int idx) {
+bool connectAndSync() {
   tft.fillScreen(COL_BG);
   tft.fillRect(0,0,SW,30,COL_PANEL); tft.drawFastHLine(0,30,SW,COL_ACCENT);
   tft.setTextColor(COL_ACCENT,COL_PANEL); tft.setTextSize(2);
   tft.setCursor(8,7); tft.print("CONNECTING...");
   drawWifiIcon(SW/2,78,COL_DIM);
   tft.setTextColor(COL_TEXT,COL_BG); tft.setTextSize(2);
-  const char* s=networks[idx].ssid;
-  tft.setCursor((SW-min((int)strlen(s)*12,SW-16))/2,118); tft.print(s);
-  tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
-  char buf[32]; snprintf(buf,sizeof(buf),"Network %d of %d",idx+1,NUM_NETWORKS);
-  tft.setCursor((SW-(int)strlen(buf)*6)/2,146); tft.print(buf);
-  int sx=(SW-NUM_NETWORKS*24)/2+8;
-  for (int i=0;i<NUM_NETWORKS;i++)
-    tft.fillCircle(sx+i*24,170,5,(i<idx)?COL_GREEN:(i==idx)?COL_ACCENT:COL_DIM);
-}
+  tft.setCursor((SW-min((int)strlen(savedSSID)*12,SW-16))/2,118); tft.print(savedSSID);
 
-void drawFailureAndSleep() {
-  tft.fillScreen(COL_BG);
-  tft.fillRect(0,0,SW,30,0x4000); tft.drawFastHLine(0,30,SW,COL_RED);
-  tft.setTextColor(COL_RED,0x4000); tft.setTextSize(2);
-  tft.setCursor(8,7); tft.print("CONNECTION FAILED");
-  tft.setTextColor(COL_RED,COL_BG); tft.setTextSize(6);
-  tft.setCursor(SW/2-18,48); tft.print("X");
-  tft.setTextColor(COL_TEXT,COL_BG); tft.setTextSize(1);
-  tft.setCursor(20,115); tft.print("Could not connect to any WiFi network.");
-  tft.setCursor(20,128); tft.print("Time sync requires an internet connection.");
-  tft.drawFastHLine(20,145,SW-40,COL_DIM);
-  tft.setTextColor(COL_DIM,COL_BG); tft.setCursor(20,152); tft.print("Networks tried:");
-  for (int i=0;i<min(NUM_NETWORKS,4);i++) {
-    char buf[36]; snprintf(buf,sizeof(buf),"- %s",networks[i].ssid);
-    tft.setCursor(28,163+i*11); tft.print(buf);
+  WiFi.disconnect(true); delay(200);
+  WiFi.begin(savedSSID, savedPassword);
+  unsigned long start=millis(); int frame=0;
+  while (WiFi.status()!=WL_CONNECTED) {
+    if (millis()-start>WIFI_TIMEOUT_MS) break;
+    int rings=(frame/5)%4;
+    drawWifiIcon(SW/2,78,COL_DIM);
+    for (int r=0;r<rings;r++) drawWifiRing(SW/2,78,r,COL_ACCENT);
+    tft.fillCircle(SW/2,92,4,rings>0?COL_ACCENT:COL_DIM);
+    tft.fillRect(0,188,SW,14,COL_BG); tft.setTextColor(COL_ACCENT,COL_BG); tft.setTextSize(1);
+    char dots[10]="        "; for(int j=0;j<=(frame/3)%8;j++) dots[j]='.';
+    char buf[28]; snprintf(buf,sizeof(buf),"Connecting%s",dots);
+    tft.setCursor((SW-(int)strlen(buf)*6)/2,190); tft.print(buf);
+    frame++; delay(120);
   }
-  for (int i=5;i>=1;i--) {
-    tft.fillRect(0,208,SW,32,COL_BG); tft.setTextColor(COL_YELLOW,COL_BG); tft.setTextSize(1);
-    char buf[44]; snprintf(buf,sizeof(buf),"Shutting down in %d second%s...",i,i==1?"":"s");
-    tft.setCursor((SW-(int)strlen(buf)*6)/2,220); tft.print(buf); delay(1000);
-  }
-  tft.fillRect(0,208,SW,32,COL_BG); tft.setTextColor(COL_RED,COL_BG); tft.setTextSize(1);
-  const char* bye="Powering off. Restart to try again.";
-  tft.setCursor((SW-(int)strlen(bye)*6)/2,220); tft.print(bye); delay(1200);
-  digitalWrite(TFT_BL,LOW);
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_deep_sleep_start();
-}
-
-bool connectAndSync() {
-  for (int i=0;i<NUM_NETWORKS;i++) {
-    drawWifiScreen(i); WiFi.disconnect(true); delay(200);
-    WiFi.begin(networks[i].ssid,networks[i].password);
-    unsigned long start=millis(); int frame=0;
-    while (WiFi.status()!=WL_CONNECTED) {
-      if (millis()-start>WIFI_TIMEOUT_MS) break;
-      int rings=(frame/5)%4;
-      drawWifiIcon(SW/2,78,COL_DIM);
-      for (int r=0;r<rings;r++) drawWifiRing(SW/2,78,r,COL_ACCENT);
-      tft.fillCircle(SW/2,92,4,rings>0?COL_ACCENT:COL_DIM);
-      tft.fillRect(0,188,SW,14,COL_BG); tft.setTextColor(COL_ACCENT,COL_BG); tft.setTextSize(1);
-      char dots[10]="        "; for(int j=0;j<=(frame/3)%8;j++) dots[j]='.';
-      char buf[28]; snprintf(buf,sizeof(buf),"Connecting%s",dots);
-      tft.setCursor((SW-(int)strlen(buf)*6)/2,190); tft.print(buf);
-      frame++; delay(120);
+  if (WiFi.status()==WL_CONNECTED) {
+    drawWifiIcon(SW/2,78,COL_GREEN);
+    tft.fillRect(0,108,SW,90,COL_BG);
+    tft.setTextColor(COL_GREEN,COL_BG); tft.setTextSize(2);
+    tft.setCursor((SW-168)/2,115); tft.print("CONNECTED!");
+    tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
+    tft.setCursor((SW-(int)strlen(savedSSID)*6)/2,140); tft.print(savedSSID);
+    tft.setCursor(34,158); tft.print("Fetching time from NTP server...");
+    configTime(0, 0, NTP_SERVER);
+    setenv("TZ", TIMEZONE, 1); tzset();
+    struct tm ti; int att=0; bool synced=false;
+    while (att<20&&!synced) {
+      if (getLocalTime(&ti)) synced=true;
+      tft.fillRect(0,172,SW,12,COL_BG); tft.setTextColor(COL_ACCENT,COL_BG);
+      char dots[10]="        "; for(int j=0;j<=att%8;j++) dots[j]='.';
+      char buf[24]; snprintf(buf,sizeof(buf),"NTP sync%s",dots);
+      tft.setCursor((SW-(int)strlen(buf)*6)/2,174); tft.print(buf);
+      att++; delay(400);
     }
-    if (WiFi.status()==WL_CONNECTED) {
-      drawWifiIcon(SW/2,78,COL_GREEN);
-      tft.fillRect(0,108,SW,90,COL_BG);
-      tft.setTextColor(COL_GREEN,COL_BG); tft.setTextSize(2);
-      tft.setCursor((SW-168)/2,115); tft.print("CONNECTED!");
-      tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
-      tft.setCursor((SW-(int)strlen(networks[i].ssid)*6)/2,140); tft.print(networks[i].ssid);
-      tft.setCursor(34,158); tft.print("Fetching time from NTP server...");
-      configTime(0, 0, NTP_SERVER);
-      setenv("TZ", TIMEZONE, 1);
-      tzset();
-      struct tm ti; int att=0; bool synced=false;
-      while (att<20&&!synced) {
-        if (getLocalTime(&ti)) synced=true;
-        tft.fillRect(0,172,SW,12,COL_BG); tft.setTextColor(COL_ACCENT,COL_BG);
-        char dots[10]="        "; for(int j=0;j<=att%8;j++) dots[j]='.';
-        char buf[24]; snprintf(buf,sizeof(buf),"NTP sync%s",dots);
-        tft.setCursor((SW-(int)strlen(buf)*6)/2,174); tft.print(buf);
-        att++; delay(400);
-      }
-      if (!synced) { delay(2000); return false; }
-      tft.fillRect(0,172,SW,40,COL_BG); tft.setTextColor(COL_GREEN,COL_BG); tft.setTextSize(1);
-      char tbuf[36];
-      snprintf(tbuf,sizeof(tbuf),"%04d-%02d-%02d   %02d:%02d:%02d",
-        ti.tm_year+1900,ti.tm_mon+1,ti.tm_mday,ti.tm_hour,ti.tm_min,ti.tm_sec);
-      tft.setCursor((SW-(int)strlen(tbuf)*6)/2,178); tft.print(tbuf);
-      tft.setTextColor(COL_ACCENT,COL_BG);
-      tft.setCursor((SW-78)/2,196); tft.print("Loading app...");
-      delay(1600); WiFi.disconnect(true); return true;
-    }
+    if (!synced) { delay(2000); return false; }
+    tft.fillRect(0,172,SW,40,COL_BG); tft.setTextColor(COL_GREEN,COL_BG); tft.setTextSize(1);
+    char tbuf[36];
+    snprintf(tbuf,sizeof(tbuf),"%04d-%02d-%02d   %02d:%02d:%02d",
+      ti.tm_year+1900,ti.tm_mon+1,ti.tm_mday,ti.tm_hour,ti.tm_min,ti.tm_sec);
+    tft.setCursor((SW-(int)strlen(tbuf)*6)/2,178); tft.print(tbuf);
+    tft.setTextColor(COL_ACCENT,COL_BG);
+    tft.setCursor((SW-78)/2,196); tft.print("Loading app...");
+    delay(1600); WiFi.disconnect(true); return true;
   }
   return false;
 }
@@ -645,6 +830,9 @@ void drawTrashIcon(int x,int y,uint16_t col) {
 //  HOLIDAY FULL COUNTDOWN SCREEN
 // ─────────────────────────────────────────────────────────────
 
+// Forward declaration — defined later in COUNTDOWN SCREEN section
+void drawCdBox(int x,int y,int w,int h,long val,const char* lbl,uint16_t ac);
+
 void drawHolidayCdScreen() {
   HomeEntry &e = homeEntries[activeHolidayEntry];
   uint16_t ac  = e.color;
@@ -748,6 +936,10 @@ void drawCountdownScreen() {
   tft.fillRoundRect(SW-96,34,22,22,4,0x4000);
   tft.drawRoundRect(SW-96,34,22,22,4,COL_RED);
   drawTrashIcon(SW-92,39,COL_RED);
+  // WiFi settings button (bottom-right)
+  tft.fillRoundRect(SW-46,SH-22,44,18,3,COL_DIM);
+  tft.setTextColor(COL_TEXT,COL_DIM); tft.setTextSize(1);
+  tft.setCursor(SW-42,SH-17); tft.print("WiFi");
   tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
   char buf[36];
   snprintf(buf,sizeof(buf),"TO: %s %02d, %04d  %02d:%02d",
@@ -884,18 +1076,8 @@ void drawSpinnerScreen() {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  KEYBOARD
+//  KEYBOARD  (name editor)
 // ─────────────────────────────────────────────────────────────
-
-const char* KB_ROWS[3][3] = {
-  {"qwertyuiop","QWERTYUIOP","1234567890"},
-  {"asdfghjkl", "ASDFGHJKL", "!@#$%^&*("},
-  {"zxcvbnm",   "ZXCVBNM",   "-_., /)+" }
-};
-#define KB_Y0 98
-#define KB_RH 34
-#define KB_KW 29
-#define KB_KH 28
 
 void drawKeyboard() {
   uint16_t ac=SLOT_COLORS[activeSlot];
@@ -1012,19 +1194,45 @@ void setup() {
   tft.setCursor(60,85); tft.print("COUNTDOWN");
   tft.setTextColor(COL_ACCENT2); tft.setTextSize(1);
   tft.setCursor(108,122); tft.print("CALENDAR");
-  tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(82,150); tft.print("Connecting to WiFi...");
   delay(900);
 
-  if (!connectAndSync()) drawFailureAndSleep();
+  bool hasCreds = loadWifiCredentials();
+
+  if (!hasCreds) {
+    // First boot — show WiFi setup screen
+    wifiSetupSSID[0]='\0'; wifiSetupPass[0]='\0';
+    kbMode=KB_LOWER; wifiSetupField=FIELD_SSID;
+    currentScreen=SCREEN_WIFI_SETUP;
+    drawWifiSetupScreen();
+    // Loop is handled in main loop below — setup() returns here
+    return;
+  }
+
+  // Credentials exist — connect directly
+  tft.fillScreen(COL_BG);
+  tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
+  tft.setCursor(82,150); tft.print("Connecting to WiFi...");
+
+  if (!connectAndSync()) {
+    // Connection failed — clear creds and show setup
+    clearWifiCredentials();
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(COL_RED,COL_BG); tft.setTextSize(2);
+    tft.setCursor(20,90); tft.print("Connection failed!");
+    tft.setTextColor(COL_DIM,COL_BG); tft.setTextSize(1);
+    tft.setCursor(20,118); tft.print("Saved network unreachable.");
+    tft.setCursor(20,132); tft.print("Please re-enter WiFi details.");
+    delay(2500);
+    wifiSetupSSID[0]='\0'; wifiSetupPass[0]='\0';
+    kbMode=KB_LOWER; wifiSetupField=FIELD_SSID;
+    currentScreen=SCREEN_WIFI_SETUP;
+    drawWifiSetupScreen();
+    return;
+  }
 
   loadAllSlots();
   buildHomeEntries();
-
-  // Start on homepage
-  pageIndex=0;
-  currentScreen=SCREEN_HOME;
-  drawHomePage();
+  pageIndex=0; currentScreen=SCREEN_HOME; drawHomePage();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1129,6 +1337,8 @@ void loop() {
           currentScreen=SCREEN_CONFIRM_CLEAR; drawConfirmClear();
         } else if (y<28 && x<SW-10) {
           openKeyboard(activeSlot);
+        } else if (x>=SW-48 && x<=SW-2 && y>=SH-24 && y<=SH-4) {
+          currentScreen=SCREEN_WIFI_CONFIRM; drawWifiConfirmScreen();
         }
       }
     }
@@ -1215,6 +1425,33 @@ void loop() {
     static bool kbWas=false;
     if (touched&&!kbWas) handleKbTouch(tx,ty);
     kbWas=touched;
+  }
+
+  // ── WIFI SETUP ─────────────────────────────────────────────
+  else if (currentScreen==SCREEN_WIFI_SETUP) {
+    static bool wsWas=false;
+    if (touched&&!wsWas) handleWifiSetupTouch(tx,ty);
+    wsWas=touched;
+  }
+
+  // ── WIFI CONFIRM (change network) ──────────────────────────
+  else if (currentScreen==SCREEN_WIFI_CONFIRM) {
+    static bool wcWas=false;
+    if (touched&&!wcWas) {
+      // NO
+      if (tx>=44&&tx<=140&&ty>=162&&ty<=186) {
+        currentScreen=SCREEN_COUNTDOWN; drawCountdownScreen();
+      }
+      // YES — clear credentials and show setup screen
+      else if (tx>=180&&tx<=276&&ty>=162&&ty<=186) {
+        clearWifiCredentials();
+        wifiSetupSSID[0]='\0'; wifiSetupPass[0]='\0';
+        kbMode=KB_LOWER; wifiSetupField=FIELD_SSID;
+        currentScreen=SCREEN_WIFI_SETUP;
+        drawWifiSetupScreen();
+      }
+    }
+    wcWas=touched;
   }
 
   delay(20);
