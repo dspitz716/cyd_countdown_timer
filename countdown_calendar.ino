@@ -46,7 +46,12 @@ char savedPassword[65] = "";
 // ═══════════════════════════════════════════════════════════════
 struct Birthday { const char* name; int month; int day; };
 const Birthday BIRTHDAYS[] = {
-  // ADD BIRTHDAYS: { "Name", month, day },
+  { "Juniper's Bday", 8,  21 },
+  { "Rowan's Bday",   9,  10 },
+  { "Cam's Bday", 11, 1},
+  { "Mom's Bday", 9, 3},
+  { "Dad's Bday", 7, 16},
+  // Add more: { "Name", month, day },
 };
 const int NUM_BIRTHDAYS = sizeof(BIRTHDAYS) / sizeof(BIRTHDAYS[0]);
 
@@ -242,6 +247,7 @@ void computeFixedCountdown(int month, int day) {
   struct tm tgt={};
   tgt.tm_year=yr-1900; tgt.tm_mon=month-1; tgt.tm_mday=day;
   tgt.tm_hour=0; tgt.tm_min=0; tgt.tm_sec=0;
+  tgt.tm_isdst=-1; // let mktime determine DST automatically
   time_t tgtE=mktime(&tgt);
   long diff=(long)(tgtE-time(nullptr));
   if (diff<=0){cdYears=cdMonths=cdDays=cdHours=cdMins=cdSecs=0;return;}
@@ -252,11 +258,12 @@ void computeFixedCountdown(int month, int day) {
 }
 
 void computeCountdown() {
-  if (currentScreen==SCREEN_HOME) return; // handled separately
+  if (currentScreen==SCREEN_HOME) return;
   CountdownSlot &s=slots[activeSlot];
   struct tm tgt={};
   tgt.tm_year=s.year-1900; tgt.tm_mon=s.month-1; tgt.tm_mday=s.day;
   tgt.tm_hour=s.hour; tgt.tm_min=s.minute; tgt.tm_sec=0;
+  tgt.tm_isdst=-1; // let mktime determine DST automatically
   time_t tgtE=mktime(&tgt);
   long diff=(long)(tgtE-time(nullptr));
   if (diff<=0){cdYears=cdMonths=cdDays=cdHours=cdMins=cdSecs=0;return;}
@@ -647,6 +654,7 @@ long daysUntilEntry(int idx) {
   int yr=nextYearFor(e.month,e.day);
   struct tm tgt={};
   tgt.tm_year=yr-1900; tgt.tm_mon=e.month-1; tgt.tm_mday=e.day;
+  tgt.tm_isdst=-1; // let mktime determine DST automatically
   time_t tgtE=mktime(&tgt);
   long diff=(long)(tgtE-time(nullptr));
   return diff>0 ? diff/86400 : 0;
@@ -1451,4 +1459,3 @@ void loop() {
 
   delay(20);
 }
-
